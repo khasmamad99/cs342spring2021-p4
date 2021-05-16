@@ -29,8 +29,8 @@ typedef struct {
 
 typedef struct {
     char filename[110];
-    int inode;
-    char padding[(8 / sizeof(int) + 1) * 4];
+    uint32_t inode;
+    char padding[12];
 } dir_entry;
 
 typedef struct {
@@ -388,7 +388,7 @@ int sfs_read(int fd, void *buf, int n)
     }
 
     int idx_block_no = open_file_table[fd]->fcb.idx_block;
-    int *idx_block = (int *) malloc(BLOCKSIZE);
+    uint32_t *idx_block = (uint32_t *) malloc(BLOCKSIZE);
     if (read_block((void *) idx_block, idx_block_no) == -1) {
         printf("error reading index block of the file\n");
         return -1;
@@ -468,7 +468,7 @@ int sfs_append(int fd, void *buf, int n)
     }
 
     int idx_block_no = open_file_table[fd]->fcb.idx_block;
-    int *idx_block = (int *) malloc(BLOCKSIZE);
+    uint32_t *idx_block = (uint32_t *) malloc(BLOCKSIZE);
     if (read_block((void *) idx_block, idx_block_no) == -1) {
         printf("error reading index block of the file\n");
         return -1;
@@ -610,7 +610,7 @@ int sfs_delete(char *filename)
     }
 
     // load index block
-    int *idx_block = (int *) malloc(BLOCKSIZE);
+    uint32_t *idx_block = (uint32_t *) malloc(BLOCKSIZE);
     if (read_block((void *) idx_block, idx_block_no) == -1) {
         printf("error reading index block of the file\n");
         return -1;
