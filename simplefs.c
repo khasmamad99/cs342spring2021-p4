@@ -13,7 +13,7 @@
 #define DIR_ENTRY_SIZE 128
 #define DIR_ENTRY_COUNT (4 * BLOCKSIZE) / sizeof(dir_entry)
 #define FCB_COUNT (4 * BLOCKSIZE) / sizeof(fcb)
-#define BITMAP_SIZE 4 * BLOCKSIZE / sizeof(word_t)
+#define BITMAP_SIZE (4 * BLOCKSIZE) / sizeof(word_t)
 #define IDX_BLOCK_SIZE BLOCKSIZE / sizeof(uint32_t)
 
 // Global Variables =======================================
@@ -118,8 +118,11 @@ int write_block (void *block, int k)
 // this function is partially implemented.
 int create_format_vdisk (char *vdiskname, unsigned int m)
 {
-    printf("size of dir_entry = %d\n", sizeof(dir_entry));
-    printf("size of fcb = %d\n", sizeof(fcb));
+    if (m < 24 || m > 29) {
+        printf("m should be in the range [24, 29]\n");
+        return -1;
+    }
+
     char command[1000];
     int size;
     int num = 1;
@@ -156,10 +159,11 @@ int create_format_vdisk (char *vdiskname, unsigned int m)
     int i;
     for (i = 0; i < BITMAP_SIZE; i++)
         bitmap[i] = 0;
-    
+
     // first 13 blocks are occupied
     for (i = 0; i < 13; i++)
         bitmap_set_bit(bitmap, i);
+
 
     if (write_multiple_blocks((void *) bitmap, 4, 1) == -1) {
         printf("error writing bitmap\n");
@@ -173,7 +177,6 @@ int create_format_vdisk (char *vdiskname, unsigned int m)
     for (i = 0; i < DIR_ENTRY_COUNT; i++) {
         strcpy(dirs[i].filename, "");
         dirs[i].inode = -1;
-        // printf("inode = %d ", dirs[i].inode);
     }
     // write
     if (write_multiple_blocks((void *) dirs, 4, 5) == -1) {
@@ -232,12 +235,9 @@ int sfs_create(char *filename)
     int i, dir_idx;
     dir_idx = -1;
     // check if a file with the same name exists
-    printf("CREATE: filename = %s\n", filename);
     for (i = 0; i < DIR_ENTRY_COUNT && strcmp(dirs[i].filename, filename) != 0; i++) {
         if (dir_idx == -1 && dirs[i].inode == -1)
             dir_idx = i;
-        printf("dirs[%d].filename = %s ", i, dirs[i].filename);
-        printf("dirs[%d].inode = %d\n", i, dirs[i].inode);
     }
     
     if (i != DIR_ENTRY_COUNT) {
@@ -249,8 +249,6 @@ int sfs_create(char *filename)
         printf("error: max number of dir entries is reached\n");
         return -1;
     }
-
-    printf("dir_idx = %d\n", dir_idx);
 
     strcpy(dirs[dir_idx].filename, filename);
     
@@ -272,6 +270,7 @@ int sfs_create(char *filename)
     word_t *bitmap;
     if (load_bitmap(&bitmap) == -1)
         return -1;
+
 
     int empty_bit_idx = bitmap_first_empty_bit(bitmap);
     fcbs[i].idx_block = empty_bit_idx;
@@ -336,8 +335,6 @@ int sfs_open(char *file, int mode)
 
     open_file_table[i] = (open_file_info *) malloc(sizeof(open_file_info));
     open_file_table[i]->fcb = fcbs[inode];
-    printf("OPEN: open_file_table[i]->fcb.size = %d\n", open_file_table[i]->fcb.size);
-
     open_file_table[i]->mode = mode;
     open_file_table[i]->pos = 0;
     if (mode == MODE_APPEND)
@@ -361,7 +358,6 @@ int sfs_close(int fd)
         if (load_fcb(&fcbs) == -1)
             return -1;
         
-        printf("CLOSE: open_file_table[fd]->fcb.size = %d\n", open_file_table[fd]->fcb.size);
         fcbs[open_file_table[fd]->inode] = open_file_table[fd]->fcb;
         if (write_multiple_blocks((void *) fcbs, 4, 9) == -1)
             return -1;
@@ -411,6 +407,7 @@ int sfs_read(int fd, void *buf, int n)
         // reading from a single block
         if (read_from_block(buf, abs_start_offset, n) == -1)
             return -1;
+        pos += n;
     } else {
         // reading from multiple blocks
         int read_size;
@@ -445,7 +442,6 @@ int sfs_read(int fd, void *buf, int n)
         }
         total_read += read_size;
         pos += read_size;
-        open_file_table[fd]->pos = pos;
 
         // consider deleting
         if (total_read != n) {
@@ -454,6 +450,7 @@ int sfs_read(int fd, void *buf, int n)
         }
     }
 
+    open_file_table[fd]->pos = pos;
     free(idx_block);
 
     return (n); 
@@ -491,8 +488,6 @@ int sfs_append(int fd, void *buf, int n)
         return -1;
     }
 
-    abs_start_offset = idx_block[start_block] * BLOCKSIZE + start_offset;
-
     // allocate new blocks
     word_t *bitmap;
     if (load_bitmap(&bitmap) == -1)
@@ -513,10 +508,12 @@ int sfs_append(int fd, void *buf, int n)
     if (write_multiple_blocks((void *) bitmap, 4, 1) == -1)
         return -1;
 
+    abs_start_offset = idx_block[start_block] * BLOCKSIZE + start_offset;
     if (start_block == end_block) {
         // writing to a single block
         if (write_to_block(buf, abs_start_offset, n) != n)
             return -1;
+        pos += n;
     } else {
         // writing to multiple blocks
         int write_size;
@@ -541,16 +538,15 @@ int sfs_append(int fd, void *buf, int n)
             total_write += BLOCKSIZE;
         }
 
-        // 3. read from the last block
+        // 3. write to the last block
         write_size = end_offset;
         int start = idx_block[end_block] * BLOCKSIZE;
-        if (read_from_block(buf, start, write_size) != write_size) {
-            printf("read error\n");
+        if (write_to_block(buf, start, write_size) != write_size) {
+            printf("write error\n");
             return -1;
         }
         total_write += write_size;
         pos += write_size;
-        open_file_table[fd]->pos = pos;
 
         // consider deleting
         if (total_write != n) {
@@ -561,7 +557,7 @@ int sfs_append(int fd, void *buf, int n)
 
     // update the file size
     open_file_table[fd]->fcb.size += n;
-    // printf("APPEND: open_file_table[fd]->fcb.size = %d\n", open_file_table[fd]->fcb.size);
+    open_file_table[fd]->pos = pos;
 
     free(idx_block);
     free(bitmap);
@@ -578,22 +574,16 @@ int sfs_delete(char *filename)
 
     // find the file
     int i;
-    for (i = 0; i < DIR_ENTRY_COUNT && strcmp(filename, dirs[i].filename) != 0; i++) {
-        if ( i <= 5) {
-            printf("dirs[%d].filename = %s ", i, dirs[i].filename);
-            printf("dirs[%d].inode = %d\n", i, dirs[i].inode);
-        }
-    }
+    for (i = 0; i < DIR_ENTRY_COUNT && strcmp(filename, dirs[i].filename) != 0; i++)
+        ;
     
     if (i == DIR_ENTRY_COUNT) {
         printf("error: file %s not found\n", filename);
         return -1;
     }
-    printf("before filename %s\n", dirs[i].filename);
 
     // set the name to empty string and inode to -1
     strcpy(dirs[i].filename, "");
-    // printf("filename %s\n", dirs[i].filename);
     int inode = dirs[i].inode;
     dirs[i].inode = -1;
 
@@ -602,13 +592,6 @@ int sfs_delete(char *filename)
         printf("error writing dirs\n");
         return -1;
     }
-
-    // free(dirs);
-    // if (load_dir_entries(&dirs) == -1)
-    //     return -1;
-
-    // printf("filename %s\n", dirs[i].filename);
-    
 
     // load file fcb
     fcb *fcbs;
@@ -644,6 +627,9 @@ int sfs_delete(char *filename)
         idx_block[i] = -1;
     }
 
+    // free index block
+    bitmap_clear_bit(bitmap, idx_block_no);
+
     // write back the bitmap
     if (write_multiple_blocks((void *) bitmap, 4, 1) == -1) {
         printf("error writing bitmap\n");
@@ -654,8 +640,6 @@ int sfs_delete(char *filename)
     free(fcbs);
     free(idx_block);
     free(bitmap);
-
-    printf("Finished deleting %s\n", filename);
 
     return (0); 
 }
@@ -707,7 +691,6 @@ int read_multiple_blocks(void *blocks, int start, int k) {
     for (i = 0; i < k; i++) {
         if (read_block(blocks + i * BLOCKSIZE, start + i) == -1)
             return -1;
-        // printf("\nREAD %d th block\n", i);
     }
     return 0;
 }
@@ -735,7 +718,7 @@ int bitmap_get_bit(word_t *bitmap, int n) {
 }
 
 int bitmap_first_empty_bit(word_t *bitmap) {
-    int i;
+    int i, j;
     for (i = 0; i < BITMAP_SIZE && bitmap[i] == (word_t) -1; i++)
         ;
     if (i == BITMAP_SIZE) {
@@ -744,9 +727,9 @@ int bitmap_first_empty_bit(word_t *bitmap) {
     }
 
     word_t word = bitmap[i];
-    for (i = 0; i < BITS_PER_WORD && (word & (1 << i)) != 0; i++)
+    for (j = 0; j < BITS_PER_WORD && (word & ((word_t) 1 << j)) != 0; j++)
         ;
-    return i;
+    return i * BITS_PER_WORD + j;
 }
 
 int read_from_block(void *buf, int start, int n) {
@@ -769,4 +752,11 @@ int write_to_block(void *buf, int start, int n) {
         return -1;
     }
     return write_size;
+}
+
+void print_bitmap(word_t *bitmap) {
+    for (int i = 0; i < BITMAP_SIZE; i ++)
+        printf("%x ", bitmap[i]);
+
+    printf("\n");
 }
